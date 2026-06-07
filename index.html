@@ -422,7 +422,41 @@ let editIdx = null, actionIdx = null;
 let pnlCh = null, firmCh = null;
 
 function load() { try { const s = localStorage.getItem(SK); if (s) db = JSON.parse(s); } catch(e) {} }
-function save() { try { localStorage.setItem(SK, JSON.stringify(db)); } catch(e) {} }
+function saveLocal() { try { localStorage.setItem(SK, JSON.stringify(db)); } catch(e) {} }
+
+let syncTimer = null;
+function save() {
+  saveLocal();
+  // Debounce: espera 800ms desde el último cambio antes de subir al Gist
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => pushGist(), 800);
+}
+
+async function pushGist() {
+  const token = getActiveToken();
+  const gist  = getActiveGist();
+  if (!token || !gist || token === 'PEGA_AQUI_TU_TOKEN') return;
+  setSyncStatus('loading', 'Guardando...');
+  try {
+    const r = await fetch('https://api.github.com/gists/' + gist, {
+      method: 'PATCH',
+      headers: { 'Authorization': 'token ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files: { 'prop_tracker.json': { content: JSON.stringify(db, null, 2) } } })
+    });
+    const j = await r.json();
+    if (j.id) setSyncStatus('ok', 'Guardado · ' + new Date().toLocaleTimeString('es-ES'));
+    else setSyncStatus('err', 'Error al guardar');
+  } catch(e) { setSyncStatus('err', 'Sin conexión'); }
+}
+
+function getActiveToken() {
+  if (typeof CONFIG_TOKEN !== 'undefined' && CONFIG_TOKEN !== 'PEGA_AQUI_TU_TOKEN') return CONFIG_TOKEN;
+  return localStorage.getItem('gh_token') || '';
+}
+function getActiveGist() {
+  if (typeof CONFIG_GIST !== 'undefined' && CONFIG_GIST) return CONFIG_GIST;
+  return localStorage.getItem('gh_gist') || '';
+}
 function getFirm(a) { return (a.firm === 'Otra' && a.firmCustom) ? a.firmCustom : a.firm; }
 function profit(a) { return (a.balance || a.size) - a.size; }
 function profitPct(a) { return a.size ? (profit(a) / a.size * 100) : 0; }
@@ -796,8 +830,8 @@ function renderCharts() {
 }
 
 async function syncSave() {
-  const token = document.getElementById('gh-token').value.trim();
-  let gistId = document.getElementById('gh-gist-id').value.trim();
+  const token = document.getElementById('gh-token').value.trim() || getActiveToken();
+  let gistId = document.getElementById('gh-gist-id').value.trim() || getActiveGist();
   if (!token) { document.getElementById('sync-msg').textContent = 'Introduce el token.'; return; }
   setSyncStatus('loading', 'Guardando...');
   const body = { files: { 'prop_tracker.json': { content: JSON.stringify(db, null, 2) } } };
@@ -813,7 +847,7 @@ async function syncSave() {
       localStorage.setItem('gh_token', token);
       localStorage.setItem('gh_gist', j.id);
       setSyncStatus('ok', 'Guardado · ' + new Date().toLocaleTimeString('es-ES'));
-      document.getElementById('sync-msg').innerHTML = '✓ Guardado. Gist ID: <strong>' + j.id + '</strong><br>Guarda este ID para usarlo en otros dispositivos.';
+      document.getElementById('sync-msg').innerHTML = '✓ Guardado. Gist ID: <strong>' + j.id + '</strong>';
     } else {
       setSyncStatus('err', 'Error'); document.getElementById('sync-msg').textContent = j.message || JSON.stringify(j);
     }
@@ -821,22 +855,32 @@ async function syncSave() {
 }
 
 async function syncLoad() {
-  const token = document.getElementById('gh-token').value.trim();
-  const gistId = document.getElementById('gh-gist-id').value.trim();
+  const token = document.getElementById('gh-token').value.trim() || getActiveToken();
+  const gistId = document.getElementById('gh-gist-id').value.trim() || getActiveGist();
   if (!token || !gistId) { document.getElementById('sync-msg').textContent = 'Token y Gist ID requeridos.'; return; }
   setSyncStatus('loading', 'Cargando...');
   try {
     const r = await fetch('https://api.github.com/gists/' + gistId, { headers: { 'Authorization': 'token ' + token } });
     const j = await r.json();
-    const content = j.files && j.files['prop_tracker.json'] && j.files['prop_tracker.json'].content;
+    // Buscar el archivo sin importar mayúsculas/minúsculas
+    const fileKey = Object.keys(j.files || {}).find(k => k.toLowerCase() === 'prop_tracker.json');
+    const content = fileKey && j.files[fileKey].content;
     if (content) {
-      db = JSON.parse(content); save();
+      db = JSON.parse(content); saveLocal();
       localStorage.setItem('gh_token', token); localStorage.setItem('gh_gist', gistId);
       setSyncStatus('ok', 'Cargado · ' + new Date().toLocaleTimeString('es-ES'));
       document.getElementById('sync-msg').textContent = '✓ Datos cargados correctamente.';
       showPage('overview', document.querySelector('.nav-item'));
       closeModal('modal-sync');
-    } else { setSyncStatus('err', 'No encontrado'); document.getElementById('sync-msg').textContent = 'No se encontró prop_tracker.json en el Gist.'; }
+      renderKPIs(); renderCards(); renderCharts();
+    } else {
+      // Gist vacío o archivo no encontrado — mostrar qué archivos hay
+      const keys = Object.keys(j.files || {});
+      setSyncStatus('err', 'Archivo no encontrado');
+      document.getElementById('sync-msg').textContent = keys.length
+        ? 'Archivos en el Gist: ' + keys.join(', ') + '. Pulsa Guardar para crear prop_tracker.json.'
+        : 'El Gist está vacío. Pulsa Guardar para inicializarlo.';
+    }
   } catch(e) { setSyncStatus('err', 'Error'); document.getElementById('sync-msg').textContent = e.message; }
 }
 
@@ -1079,43 +1123,47 @@ function exportPDF() {
 // ─── CONFIGURACIÓN FIJA ──────────────────────────────────────────────────────
 // Pega aquí tu token de GitHub (scope: gist) después de generarlo.
 // Este archivo es solo tuyo — no lo compartas públicamente con el token relleno.
-const CONFIG_TOKEN = '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';   // ← reemplaza esto
+const CONFIG_TOKEN = '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';   // ← reemplaza esto
 const CONFIG_GIST  = '983963f96ea2d25f01b9ce7c102373a8';
 // ─────────────────────────────────────────────────────────────────────────────
 
 load();
 
 // Rellena los campos del modal con la config fija (o localStorage como fallback)
-const activeToken = CONFIG_TOKEN !== 'PEGA_AQUI_TU_TOKEN' ? CONFIG_TOKEN : (localStorage.getItem('gh_token') || '');
-const activeGist  = CONFIG_GIST  || localStorage.getItem('gh_gist') || '';
+const activeToken = getActiveToken();
+const activeGist  = getActiveGist();
 
 if (activeToken) document.getElementById('gh-token').value = activeToken;
 if (activeGist)  document.getElementById('gh-gist-id').value = activeGist;
 
-// Auto-sync al arrancar si hay token y gist configurados
+// Auto-sync al arrancar: carga desde Gist si hay credenciales
 async function autoSync() {
-  if (!activeToken || !activeGist || activeToken === 'PEGA_AQUI_TU_TOKEN') {
-    setSyncStatus('', 'Token pendiente');
+  const token = getActiveToken();
+  const gist  = getActiveGist();
+  if (!token || !gist || token === 'PEGA_AQUI_TU_TOKEN') {
+    setSyncStatus('err', 'Token no configurado');
     renderKPIs(); renderCards(); renderCharts();
     return;
   }
   setSyncStatus('loading', 'Cargando datos...');
   try {
-    const r = await fetch('https://api.github.com/gists/' + activeGist, {
-      headers: { 'Authorization': 'token ' + activeToken }
+    const r = await fetch('https://api.github.com/gists/' + gist, {
+      headers: { 'Authorization': 'token ' + token }
     });
     const j = await r.json();
-    const content = j.files && j.files['prop_tracker.json'] && j.files['prop_tracker.json'].content;
+    const fileKey = Object.keys(j.files || {}).find(k => k.toLowerCase() === 'prop_tracker.json');
+    const content = fileKey && j.files[fileKey].content;
     if (content) {
-      db = JSON.parse(content); save();
-      localStorage.setItem('gh_token', activeToken);
-      localStorage.setItem('gh_gist', activeGist);
+      db = JSON.parse(content);
+      saveLocal(); // solo local, no volver a subir
       setSyncStatus('ok', 'Sincronizado · ' + new Date().toLocaleTimeString('es-ES'));
     } else {
-      setSyncStatus('err', 'Gist vacío');
+      // Gist vacío — subir los datos locales para inicializarlo
+      setSyncStatus('loading', 'Inicializando Gist...');
+      await pushGist();
     }
   } catch(e) {
-    setSyncStatus('err', 'Sin conexión');
+    setSyncStatus('err', 'Sin conexión — datos locales');
   }
   renderKPIs(); renderCards(); renderCharts();
 }
