@@ -1076,13 +1076,52 @@ function exportPDF() {
   w.document.close();
 }
 
+// ─── CONFIGURACIÓN FIJA ──────────────────────────────────────────────────────
+// Pega aquí tu token de GitHub (scope: gist) después de generarlo.
+// Este archivo es solo tuyo — no lo compartas públicamente con el token relleno.
+const CONFIG_TOKEN = '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';   // ← reemplaza esto
+const CONFIG_GIST  = '983963f96ea2d25f01b9ce7c102373a8';
+// ─────────────────────────────────────────────────────────────────────────────
+
 load();
-const st = localStorage.getItem('gh_token');
-const sg = localStorage.getItem('gh_gist');
-if (st) document.getElementById('gh-token').value = st;
-if (sg) { document.getElementById('gh-gist-id').value = sg; setSyncStatus('ok', 'Config. guardada'); }
+
+// Rellena los campos del modal con la config fija (o localStorage como fallback)
+const activeToken = CONFIG_TOKEN !== 'PEGA_AQUI_TU_TOKEN' ? CONFIG_TOKEN : (localStorage.getItem('gh_token') || '');
+const activeGist  = CONFIG_GIST  || localStorage.getItem('gh_gist') || '';
+
+if (activeToken) document.getElementById('gh-token').value = activeToken;
+if (activeGist)  document.getElementById('gh-gist-id').value = activeGist;
+
+// Auto-sync al arrancar si hay token y gist configurados
+async function autoSync() {
+  if (!activeToken || !activeGist || activeToken === 'PEGA_AQUI_TU_TOKEN') {
+    setSyncStatus('', 'Token pendiente');
+    renderKPIs(); renderCards(); renderCharts();
+    return;
+  }
+  setSyncStatus('loading', 'Cargando datos...');
+  try {
+    const r = await fetch('https://api.github.com/gists/' + activeGist, {
+      headers: { 'Authorization': 'token ' + activeToken }
+    });
+    const j = await r.json();
+    const content = j.files && j.files['prop_tracker.json'] && j.files['prop_tracker.json'].content;
+    if (content) {
+      db = JSON.parse(content); save();
+      localStorage.setItem('gh_token', activeToken);
+      localStorage.setItem('gh_gist', activeGist);
+      setSyncStatus('ok', 'Sincronizado · ' + new Date().toLocaleTimeString('es-ES'));
+    } else {
+      setSyncStatus('err', 'Gist vacío');
+    }
+  } catch(e) {
+    setSyncStatus('err', 'Sin conexión');
+  }
+  renderKPIs(); renderCards(); renderCharts();
+}
+
 document.getElementById('f-date').value = new Date().toISOString().slice(0, 10);
-renderKPIs(); renderCards(); renderCharts();
+autoSync();
 </script>
 </body>
 </html>
